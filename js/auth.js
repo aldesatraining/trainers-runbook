@@ -64,7 +64,7 @@ function screens({ screen, msg, busy, user }) {
       <button class="btn primary wide" ${dis}>Sign in</button>
     </form>
     <p class="muted small auth-alt"><button class="plain" data-auth="to:reset">Forgot your password?</button></p>
-    <p class="muted small auth-alt">New here? <button class="plain" data-auth="to:signup">Create an account</button></p>`, msg);
+    <p class="muted small auth-alt">Need access? Ask your administrator to create an account for you.</p>`, msg);
 }
 
 export async function startSession(root) {
@@ -88,8 +88,7 @@ export async function startSession(root) {
     const admit = async (user) => {
       state.user = user;
       if (!domainOk(user.email || "")) { await cloud.logout(); return go("signin", { kind: "err", text: domainMsg }); }
-      if (!user.emailVerified) return go("verify");
-      try { await cloud.refreshUser(); } catch { /* the token refresh is retried by the first read */ }
+      // Accounts are created by an administrator, so access is decided by the "allowed" list in firestore.rules.
       finish(user);
     };
     cloud.watch((user) => { if (done) return; if (user) admit(user); else if (state.screen === "loading") go("signin"); });
@@ -100,6 +99,7 @@ export async function startSession(root) {
       e.preventDefault();
       const kind = form.dataset.authForm, email = form.email.value.trim(), password = form.password?.value || "";
       if (kind !== "signin" && !domainOk(email)) return go(kind, { kind: "err", text: domainMsg });
+      if (kind === "signup") return go("signin");
       state.busy = true; draw();
       try {
         if (kind === "signin") { await cloud.signIn(email, password); /* the auth listener takes it from here */ }
