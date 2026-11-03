@@ -1,0 +1,29 @@
+rules_version = '2';
+// Paste into Firebase console -> Firestore Database -> Rules -> Publish.
+// Change "alder[.]com" below if allowedDomain in js/firebase-config.js is different.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Signed in, email confirmed, and at the company domain.
+    function member() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower().matches('.*@alder[.]com');
+    }
+
+    // Outlines and their version history are shared by every member.
+    match /outlines/{id} {
+      allow read, write: if member();
+      match /versions/{n} {
+        allow read, write: if member();
+      }
+    }
+
+    // Progress, checklists, notes and calendar dates belong to one person.
+    match /users/{uid}/{document=**} {
+      allow read, write: if member() && request.auth.uid == uid;
+    }
+
+    // Everything else is closed.
+  }
+}
