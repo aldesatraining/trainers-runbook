@@ -4,6 +4,8 @@
 // Firestore layout
 //   outlines/{id}                  shared by everyone: { program (JSON string), builtin, archived, deleted, vcount, updatedAt, updatedBy }
 //   outlines/{id}/versions/{n}     shared version history: { n, at, note, program (JSON string) }
+//   quizzes/{id}                   shared quiz blueprint: { json (string), title, vcount, updatedAt, updatedBy }
+//   quizzes/{id}/versions/{n}      shared quiz history: { n, at, note, json (string) }
 //   users/{uid}/progress/{id}      one person's progress, checklists and notes for an outline: { json }
 //   users/{uid}/meta/app           one person's last-opened times and calendar start dates: { json }
 // Programs are stored as JSON strings because Firestore does not allow arrays inside arrays, which outline guides use.
@@ -96,6 +98,46 @@ export function createCloudAdapter(user) {
     // Writes only what differs from what Firestore already holds, so one person's save never rewrites another's outlines.
     saveCatalog(c) {
       queue = queue.then(() => write(c)).catch(failed);
+      return queue;
+    },
+
+    /* shared: quiz blueprints */
+    async loadQuizzes() {
+      const snap = await getDocs(collection(db, "quizzes")); // throws when the rules refuse: the caller shows why
+      const quizzes = [], counts = {};
+      for (const d of snap.docs) {
+        const x = d.data(), q = parse(x.json);
+        if (!q) continue;
+        quizzes.push({ ...q, id: d.id });
+        counts[d.id] = x.vcount || 0;
+      }
+      return { quizzes, counts };
+    },
+    async loadQuizVersions(id) {
+      const snap = await getDocs(collection(db, "quizzes", id, "versions"));
+      return snap.docs.map((d) => d.data()).map((v) => ({ n: v.n, at: v.at, note: v.note || "", quiz: parse(v.json) })).filter((v) => v.quiz).sort((a, b) => a.n - b.n);
+    },
+    // The quiz itself plus any version records to add or drop, in one batch, in the order they were asked for.
+    saveQuiz(q, { add = [], drop = [], count = 0 } = {}) {
+      queue = queue.then(async () => {
+        const batch = writeBatch(db);
+        batch.set(doc(db, "quizzes", q.id), { json: JSON.stringify(q), title: q.title, vcount: count, updatedAt: Date.now(), updatedBy: user.email || "" });
+        add.forEach((v) => batch.set(doc(db, "quizzes", q.id, "versions", String(v.n)), { n: v.n, at: v.at, note: v.note || "", json: JSON.stringify(v.quiz) }));
+        drop.forEach((n) => batch.delete(doc(db, "quizzes", q.id, "versions", String(n))));
+        await batch.commit();
+      }).catch(failed);
+      return queue;
+    },
+    deleteQuiz(id) {
+      queue = queue.then(async () => {
+        const vs = await getDocs(collection(db, "quizzes", id, "versions"));
+        const refs = [...vs.docs.map((v) => v.ref), doc(db, "quizzes", id)];
+        for (let i = 0; i < refs.length; i += 400) {
+          const batch = writeBatch(db);
+          refs.slice(i, i + 400).forEach((r) => batch.delete(r));
+          await batch.commit();
+        }
+      }).catch(failed);
       return queue;
     },
   };

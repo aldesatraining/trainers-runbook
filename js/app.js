@@ -6,6 +6,7 @@ import { createStore, timerLeft } from "./store.js";
 import { adapter, useAdapter } from "./storage.js";
 import { startSession, showAccessError } from "./auth.js";
 import { logins, loginByUrl, presentations, documents, CREDENTIAL_NOTE } from "./data/library.js";
+import { createQuizUI } from "./quiz-ui.js";
 
 const $app = document.getElementById("app");
 // Transient UI state (not persisted): which side panel is open, which segment of Prep/Close is showing.
@@ -595,7 +596,7 @@ function homeView() {
   <main class="stage home">
     <section class="home-head">
       <div class="home-title"><div><div class="kicker">Library</div><h1>Choose an outline</h1></div>
-        <div class="row"><button class="btn" data-lib="import" title="Import an outline file exported from this app">Import</button><button class="btn primary" data-lib="new">+ New outline</button></div></div>
+        <div class="row"><button class="btn" data-qz="goto:list" title="Build quiz blueprints with answer keys">Quizzes</button><button class="btn" data-lib="import" title="Import an outline file exported from this app">Import</button><button class="btn primary" data-lib="new">+ New outline</button></div></div>
       ${msg ? `<div class="banner ${msg.kind}" role="status"><span>${esc(msg.text)}</span><button class="plain small" data-lib="dismiss">Dismiss</button></div>` : ""}
       <label class="search"><span class="sr">Search outlines and topics</span>
         <input type="search" data-search placeholder="Search outlines or topics inside them (e.g. billing, panels, cancellation)" value="${esc(q)}" autocomplete="off"></label>
@@ -980,7 +981,8 @@ function edAction(spec) {
   render();
 }
 
-/* ---------- routing: #/ = library, #/p/<id> = an outline, #/edit/<id> = the editor ---------- */
+/* ---------- routing: #/ = library, #/p/<id> = an outline, #/edit/<id> = the editor, #/quizzes and #/quiz/<id> = quiz blueprints ---------- */
+const quizUI = createQuizUI({ root: $app, rerender: () => render(), account: () => accountBar(), download });
 let store = null;
 let unsub = null;
 let ov = null; // id of the outline whose overview page is showing
@@ -988,7 +990,7 @@ let pendingGoto = null;
 let session = { mode: "local" }; // becomes { mode: "cloud", user, signOut } once signed in to the shared backend
 const catalogReady = (async () => {
   session = await startSession($app);
-  if (session.mode === "cloud") useAdapter((await import("./cloud.js")).createCloudAdapter(session.user));
+  if (session.mode === "cloud") { useAdapter((await import("./cloud.js")).createCloudAdapter(session.user)); quizUI.setAuthor(session.user.email); }
   try { await loadCatalog(); } catch (err) { showAccessError($app, session, err); await new Promise(() => {}); } // stay on the message
 })();
 
@@ -999,8 +1001,17 @@ async function route() {
   const program = m ? getProgram(decodeURIComponent(m[1])) : null;
   store?.flush(); // never leave the outline with an unsaved change
   edFinish();
+  quizUI.leave();
   unsub?.(); unsub = null; store = null; ed = null; cal = null; ov = null;
   ui.panel = null;
+  const qm = quizUI.match(location.hash);
+  if (qm) {
+    ui.modal = null;
+    window.scrollTo(0, 0);
+    await quizUI.enter(qm);
+    document.title = quizUI.title();
+    return render();
+  }
   const om = location.hash.match(/^#\/o\/([^/?]+)/);
   if (om) {
     const p = getProgram(decodeURIComponent(om[1]));
@@ -1052,11 +1063,17 @@ async function route() {
   render();
 }
 window.addEventListener("hashchange", route);
-window.addEventListener("pagehide", () => { store?.flush(); edFinish(); });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { store?.flush(); edFlush(); } });
+window.addEventListener("pagehide", () => { store?.flush(); edFinish(); quizUI.leave(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { store?.flush(); edFlush(); quizUI.flush(); } });
 
 /* ---------- render + events ---------- */
 function render() {
+  if (quizUI.active()) {
+    $app.innerHTML = quizUI.html();
+    $app.dataset.view = "quiz";
+    quizUI.after();
+    return;
+  }
   if (ov) {
     const p = getProgram(ov);
     if (!p) { location.hash = "#/"; return; }
@@ -1110,7 +1127,7 @@ const accountBar = () => (session.mode === "cloud"
 // Shared library: pick up other people's changes when the tab regains focus (never while editing or running a session).
 let lastRefresh = Date.now();
 document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState !== "visible" || session.mode !== "cloud" || ed || cal || store || Date.now() - lastRefresh < 15000) return;
+  if (document.visibilityState !== "visible" || session.mode !== "cloud" || ed || cal || store || quizUI.active() || Date.now() - lastRefresh < 15000) return;
   lastRefresh = Date.now();
   try { await loadCatalog(); await loadHomeData(); if (!ed && !cal && !store) render(); } catch { /* keep what is on screen */ }
 });
